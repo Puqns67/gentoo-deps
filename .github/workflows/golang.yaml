@@ -1,0 +1,86 @@
+name: Golang
+
+on:
+  workflow_dispatch:
+    inputs:
+      REPOSITORY_ADDRESS:
+        description: Repository address
+        required: true
+
+      REPOSITORY_REFERENCE:
+        description: Reference for repository
+        required: true
+
+      EXPORT_TYPE:
+        description: Export type for dependency package
+        type: choice
+        default: all
+        options:
+          - all
+          - deps
+          - vendor
+
+      EXPORT_TAG:
+        description: Export tag for dependency package
+        required: true
+
+      WORKING_DIR:
+        description: Working Dir
+        required: true
+        default: "/tmp"
+
+permissions:
+  contents: write
+
+jobs:
+  generator:
+    runs-on: ubuntu-latest
+
+    env:
+      TAG: ${{ inputs.EXPORT_TAG }}
+
+      BASE: ${{ inputs.WORKING_DIR }}/${{ inputs.EXPORT_TAG }}
+      EXPORT: ${{ inputs.WORKING_DIR }}/${{ inputs.EXPORT_TAG }}/export
+
+      GOMODCACHE: ${{ inputs.WORKING_DIR }}/${{ inputs.EXPORT_TAG }}/go-mod
+
+    steps:
+      - name: Setup golang
+        uses: actions/setup-go@v4
+        with:
+          go-version: "stable"
+
+      - name: Create dirs
+        run: mkdir -pv ${BASE}/export
+
+      - name: Checkout repository
+        run: |
+          cd ${BASE}
+          git init
+          git remote add source ${{ inputs.REPOSITORY_ADDRESS }}
+          git fetch source ${{ inputs.REPOSITORY_REFERENCE }} --depth 1
+          git checkout FETCH_HEAD
+
+      - name: Generate vendor
+        if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'vendor' }}
+        run: |
+          cd ${BASE}
+          go mod vendor -modcacherw
+          tar -cvf ${EXPORT}/${TAG}-vendor.tar vendor
+
+      - name: Generate deps
+        if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'deps' }}
+        run: |
+          cd ${BASE}
+          go mod download -modcacherw
+          tar -cvf ${EXPORT}/${TAG}-deps.tar go-mod
+
+      - name: Compress exported files
+        run: xz -zv9T0 ${EXPORT}/*
+
+      - name: Create release and upload artifaces
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create ${TAG} ${EXPORT}/*
+
