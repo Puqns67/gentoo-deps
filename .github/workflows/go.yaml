@@ -32,6 +32,9 @@ on:
         description: Export tag for dependency package
         required: true
 
+      VENDOR_PATH:
+        description: The path of Vendor dir in the vendor dependency package. If need to defined ${S} in ebuild, also needs to be defined this field. Default to using export tag
+
       WORKING_IN_TMPFS:
         description: Working in tmpfs
         type: boolean
@@ -75,9 +78,11 @@ jobs:
 
       - name: Generate vendor
         if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'vendor' }}
+        env:
+          VENDOR_PATH: ${{ inputs.VENDOR_PATH == null && inputs.EXPORT_TAG || inputs.VENDOR_PATH }}
         run: |
-          go mod vendor -modcacherw -o ${TAG}/vendor
-          tar -cf ${TAG}-vendor.tar ${TAG}/vendor
+          go mod vendor -modcacherw -o ${VENDOR_PATH}/vendor
+          tar -cf ${TAG}-vendor.tar ${VENDOR_PATH}/vendor
 
       - name: Generate deps
         if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'deps' }}
