@@ -1,0 +1,107 @@
+name: Go
+
+on:
+  workflow_dispatch:
+    inputs:
+      REPOSITORY_TYPE:
+        description: Repository type
+        type: choice
+        default: GitHub
+        options:
+          - GitHub
+          - URI
+
+      REPOSITORY_ADDRESS:
+        description: Repository address
+        required: true
+
+      REPOSITORY_REFERENCE:
+        description: Reference for repository
+        required: true
+
+      EXPORT_TYPE:
+        description: Export type for dependency package
+        type: choice
+        default: all
+        options:
+          - all
+          - deps
+          - vendor
+
+      EXPORT_TAG:
+        description: Export tag for dependency package
+        required: true
+
+      WORKING_IN_TMPFS:
+        description: Working in tmpfs
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  generator:
+    runs-on: ubuntu-latest
+
+    env:
+      TAG: ${{ inputs.EXPORT_TAG }}
+
+    steps:
+      - name: Setup golang
+        uses: actions/setup-go@v5
+        with:
+          cache: false
+          go-version: "stable"
+
+      - name: Using Tmpfs
+        if: ${{ inputs.WORKING_IN_TMPFS }}
+        run: sudo mount -t tmpfs tmpfs .
+
+      - name: Checkout repository from GitHub
+        if: ${{ inputs.REPOSITORY_TYPE == 'GitHub' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.REPOSITORY_ADDRESS }}
+          ref: ${{ inputs.REPOSITORY_REFERENCE }}
+
+      - name: Checkout repository from URI
+        if: ${{ inputs.REPOSITORY_TYPE == 'URI' }}
+        run: |
+          git init
+          git remote add source ${{ inputs.REPOSITORY_ADDRESS }}
+          git fetch source ${{ inputs.REPOSITORY_REFERENCE }} --depth 1
+          git checkout FETCH_HEAD
+
+      - name: Generate vendor
+        if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'vendor' }}
+        run: |
+          go mod vendor -modcacherw -o ${TAG}/vendor
+          tar -cf ${TAG}-vendor.tar ${TAG}/vendor
+
+      - name: Generate deps
+        if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'deps' }}
+        run: |
+          GOMODCACHE="$(realpath go-mod)" go mod download -x -modcacherw
+          tar -cf ${TAG}-deps.tar go-mod
+
+      - name: Compress exported files
+        run: xz -zv9T0 ${TAG}-*.tar
+
+      - name: Generate notes
+        run: |
+          manifest() {
+            for i in "$@"; do
+              printf "DIST %s %s BLAKE2B %s SHA512 %s\n" ${i} $(stat -c%s ${i}) $(b2sum ${i} | cut -c-128) $(sha512sum ${i} | cut -c-128)
+            done
+          }
+
+          printf "\u0060\u0060\u0060Manifest\n" >> note.md
+          manifest ${TAG}-*.tar.xz >> note.md
+          printf "\u0060\u0060\u0060\n" >> note.md
+
+      - name: Create release and upload artifaces
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create ${TAG} -F note.md ${TAG}-*.tar.xz
