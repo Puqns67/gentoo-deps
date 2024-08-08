@@ -35,6 +35,9 @@ on:
       VENDOR_PATH:
         description: The path of Vendor dir in the vendor dependency package. If need to defined ${S} in ebuild, also needs to be defined this field. Default to using export tag
 
+      SRC_PATH:
+        description: The path of Go source code in the repository
+
       WORKING_IN_TMPFS:
         description: Working in tmpfs
         type: boolean
@@ -49,9 +52,13 @@ jobs:
 
     env:
       TAG: ${{ inputs.EXPORT_TAG }}
+      EXPORT: /tmp/export
 
     steps:
-      - name: Setup golang
+      - name: Create dirs
+        run: mkdir -pv ${EXPORT}
+
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
           cache: false
@@ -80,33 +87,36 @@ jobs:
         if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'vendor' }}
         env:
           VENDOR_PATH: ${{ inputs.VENDOR_PATH == null && inputs.EXPORT_TAG || inputs.VENDOR_PATH }}
+        working-directory: ${{ inputs.SRC_PATH == null && '.' || inputs.SRC_PATH }}
         run: |
           go mod vendor -modcacherw -o ${VENDOR_PATH}/vendor
-          tar -cf ${TAG}-vendor.tar ${VENDOR_PATH}/vendor
+          tar -cf ${EXPORT}/${TAG}-vendor.tar ${VENDOR_PATH}/vendor
 
       - name: Generate deps
         if: ${{ inputs.EXPORT_TYPE == 'all' || inputs.EXPORT_TYPE == 'deps' }}
+        working-directory: ${{ inputs.SRC_PATH == null && '.' || inputs.SRC_PATH }}
         run: |
           GOMODCACHE="$(realpath go-mod)" go mod download -x -modcacherw
-          tar -cf ${TAG}-deps.tar go-mod
+          tar -cf ${EXPORT}/${TAG}-deps.tar go-mod
 
       - name: Compress exported files
-        run: xz -zv9T0 ${TAG}-*.tar
+        run: xz -zv9T0 ${EXPORT}/*.tar
 
       - name: Generate notes
         run: |
-          manifest() {
-            for i in "$@"; do
-              printf "DIST %s %s BLAKE2B %s SHA512 %s\n" ${i} $(stat -c%s ${i}) $(b2sum ${i} | cut -c-128) $(sha512sum ${i} | cut -c-128)
-            done
-          }
-
           printf "\u0060\u0060\u0060Manifest\n" >> note.md
-          manifest ${TAG}-*.tar.xz >> note.md
-          printf "\u0060\u0060\u0060\n" >> note.md
+          for i in ${EXPORT}/*.tar.*; do
+            printf \
+              "DIST %s %s BLAKE2B %s SHA512 %s\n" \
+              $(basename $i) \
+              $(stat -c%s $i) \
+              $(b2sum $i | cut -c-128) \
+              $(sha512sum $i | cut -c-128) >> note.md
+          done
+          printf "\u0060\u0060\u0060" >> note.md
 
       - name: Create release and upload artifaces
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create ${TAG} -F note.md ${TAG}-*.tar.xz
+        run: gh release create ${TAG} -F note.md ${EXPORT}/*.tar.*
